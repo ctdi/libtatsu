@@ -1084,6 +1084,7 @@ int tss_request_add_savage_tags(plist_t request, plist_t parameters, plist_t ove
 int tss_request_add_yonkers_tags(plist_t request, plist_t parameters, plist_t overrides, char **component_name)
 {
 	plist_t node = NULL;
+	char keybuf[64];
 
 	plist_t manifest_node = plist_dict_get_item(parameters, "Manifest");
 	if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
@@ -1091,9 +1092,22 @@ int tss_request_add_yonkers_tags(plist_t request, plist_t parameters, plist_t ov
 		return -1;
 	}
 
-	/* add tags indicating we want to get the Savage,Ticket */
+	/*
+	 * Determine the tag prefix. Newer devices (e.g. iPhone 18 Pro) use a
+	 * "YonkersIR1" variant with tags/components named "YonkersIR1,*" instead
+	 * of "Yonkers,*". Detect this from the merged DeviceInfo parameters.
+	 */
+	const char *prefix = "Yonkers";
+	if (plist_dict_get_item(parameters, "YonkersIR1,ChipID")
+	    || plist_dict_get_item(parameters, "YonkersIR1,ProductionMode")
+	    || plist_dict_get_item(parameters, "YonkersIR1,ECID")) {
+		prefix = "YonkersIR1";
+	}
+
+	/* add tags indicating we want to get the <prefix>,Ticket */
 	plist_dict_set_item(request, "@BBTicket", plist_new_bool(1));
-	plist_dict_set_item(request, "@Yonkers,Ticket", plist_new_bool(1));
+	snprintf(keybuf, sizeof(keybuf), "@%s,Ticket", prefix);
+	plist_dict_set_item(request, keybuf, plist_new_bool(1));
 
 	/* add SEP */
 	node = plist_access_path(manifest_node, 2, "SEP", "Digest");
@@ -1106,22 +1120,28 @@ int tss_request_add_yonkers_tags(plist_t request, plist_t parameters, plist_t ov
 	plist_dict_set_item(request, "SEP", dict);
 
 	{
-		static const char *keys[] = {"Yonkers,AllowOfflineBoot", "Yonkers,BoardID", "Yonkers,ChipID", "Yonkers,ECID", "Yonkers,Nonce", "Yonkers,PatchEpoch", "Yonkers,ProductionMode", "Yonkers,ReadECKey", "Yonkers,ReadFWKey", };
+		static const char *suffixes[] = {",AllowOfflineBoot", ",BoardID", ",ChipID", ",ECID", ",Nonce", ",PatchEpoch", ",ProductionMode", ",ReadECKey", ",ReadFWKey", };
 		int i;
-		for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); ++i) {
-			node = plist_dict_get_item(parameters, keys[i]);
+		for (i = 0; i < (int)(sizeof(suffixes) / sizeof(suffixes[0])); ++i) {
+			snprintf(keybuf, sizeof(keybuf), "%s%s", prefix, suffixes[i]);
+			node = plist_dict_get_item(parameters, keybuf);
 			if (!node) {
-				error("ERROR: %s: Unable to find required %s in parameters\n", __func__, keys[i]);
+				error("ERROR: %s: Unable to find required %s in parameters\n", __func__, keybuf);
 			}
-			plist_dict_set_item(request, keys[i], plist_copy(node));
+			plist_dict_set_item(request, keybuf, plist_copy(node));
 			node = NULL;
 		}
 	}
 
 	char *comp_name = NULL;
 	plist_t comp_node = NULL;
-	uint8_t isprod = plist_dict_get_bool(parameters, "Yonkers,ProductionMode");
-	uint64_t fabrevision = plist_dict_get_uint(parameters, "Yonkers,FabRevision");
+	snprintf(keybuf, sizeof(keybuf), "%s,ProductionMode", prefix);
+	uint8_t isprod = plist_dict_get_bool(parameters, keybuf);
+	snprintf(keybuf, sizeof(keybuf), "%s,FabRevision", prefix);
+	uint64_t fabrevision = plist_dict_get_uint(parameters, keybuf);
+
+	char systoppatch[64];
+	int systoppatch_len = snprintf(systoppatch, sizeof(systoppatch), "%s,SysTopPatch", prefix);
 
 	plist_dict_iter iter = NULL;
 	plist_dict_new_iter(manifest_node, &iter);
@@ -1133,7 +1153,7 @@ int tss_request_add_yonkers_tags(plist_t request, plist_t parameters, plist_t ov
 			node = NULL;
 			break;
 		}
-		if (strncmp(comp_name, "Yonkers,SysTopPatch", 19) == 0) {
+		if (strncmp(comp_name, systoppatch, systoppatch_len) == 0) {
 			int target_node = 1;
 			plist_t sub_node;
 			if ((sub_node = plist_dict_get_item(node, "EPRO")) != NULL && plist_get_node_type(sub_node) == PLIST_BOOLEAN) {
@@ -1156,11 +1176,11 @@ int tss_request_add_yonkers_tags(plist_t request, plist_t parameters, plist_t ov
 	free(iter);
 
 	if (comp_name == NULL) {
-		error("ERROR: No Yonkers node for %s/%lu\n", (isprod) ? "Production" : "Development", (unsigned long)fabrevision);
+		error("ERROR: No %s node for %s/%lu\n", prefix, (isprod) ? "Production" : "Development", (unsigned long)fabrevision);
 		return -1;
 	}
 
-	/* add Yonkers,SysTopPatch* */
+	/* add <prefix>,SysTopPatch* */
 	if (comp_node != NULL) {
 		plist_t comp_dict = plist_copy(comp_node);
 		plist_dict_remove_item(comp_dict, "Info");
